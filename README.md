@@ -1,38 +1,55 @@
-# Whole Genome Sequencing (WGS) Pipeline****
+# 🧬 Automated WGS Variant Calling Workflow with Snakemake 
 
-This is a fully automated Whole Genome Sequencing (WGS) workflow built using Snakemake and Conda.
-It performs quality control, trimming, alignment, BAM processing, and variant calling with GATK HaplotypeCaller.
-The pipeline supports Saccharomyces cerevisiae, Schizosaccharomyces pombe, or any custom reference genome.
+This repository provides a fully automated Whole Genome Sequencing (WGS) variant-calling workflow developed using Snakemake with Conda environment management. The pipeline performs end-to-end analysis including quality control, read alignment, BAM processing, and variant calling using GATK HaplotypeCaller. It is designed for single-end sequencing datasets and automatically detects FASTQ samples and produces final merged VCF files containing SNPs and INDELs.
 
-The final output contains SNPs and Indels per sample in the form of merged VCFs.
+---
 
-# Input Files
-1. FASTQ files
+##  Pipeline Overview
 
-Place sequencing reads inside:
+| Step | Description |
+|------|-------------|
+| Sample Detection | Automatically collects `reads/{sample}.fastq.gz` |
+| FastQC | Raw reads quality check |
+| Alignment | Maps reads to reference genome using **Bowtie2** |
+| Sorting | Sorts BAM files (*AMtools) |
+| Mark Duplicates | GATK MarkDuplicates |
+| Calling SNPs & INDELs | GATK HaplotypeCaller |
+| Splitting | Generates separate SNP & INDEL VCFs |
+| Merging | Final combined VCF per sample |
 
-reads/{sample}.fastq.gz
 
 
-The pipeline automatically detects sample names.
+##  Requirements
+| Tools Used |
+|------|
+| Snakemake | 
+| Conda |
+| FastQC |
+| Bowtie2 |
+| SAMtools| 
+| GATK | 
 
-2. Reference genome
-Place the reference FASTA file as:
-   reference/genome.fa
+###  **Running the Pipeline — Step by Step**
 
- ****Required indexes
-The pipeline will automatically generate:
-   Bowtie2 index files
-Stored as:
-reference/genome.1.bt2
-reference/genome.2.bt2
-reference/genome.3.bt2
-reference/genome.4.bt2
-reference/genome.rev.1.bt2
-reference/genome.rev.2.bt2
+```bash
+conda  create -n snakemake 
+conda activate snakemake
+conda install -c bioconda snakemake
 
-GATK / Samtools index files
-Also created automatically:
+**Steps**
+1️⃣Prepare Input FASTQ Files
+Place your sequencing files inside the reads/ directory:
 
-reference/genome.fa.fai        (samtools index),
-reference/genome.dict          (GATK dictionary)
+reads/sample1.fastq.gz
+reads/sample2.fastq.gz
+
+2️⃣ Set the Reference Genome
+Edit the reference path inside the Snakefile:
+REF = "ref/genome.fa"
+
+3️⃣ Execute the Workflow
+Dry-run (preview without executing):
+snakemake -np
+
+Run with Conda environments enabled:
+snakemake --use-conda --cores 6
