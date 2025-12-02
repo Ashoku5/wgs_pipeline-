@@ -1,0 +1,295 @@
+import os
+
+#############################################
+# CONFIG
+############################################
+
+
+#############################################
+# AUTO-DETECT SAMPLES (single-end)
+#############################################
+
+SAMPLES = [
+    f.replace(".fastq.gz","")
+    for f in glob_wildcards("reads/{sample}.fastq.gz").sample
+]
+
+#############################################
+# RULE ALL
+#############################################
+
+rule all:
+    input:
+        # FastQC reports
+        expand("fastqc/{sample}_fastqc.html", sample=SAMPLES),
+        expand("fastqc/{sample}_fastqc.zip", sample=SAMPLES),
+
+        # Final VCFs
+        expand("variants/{sample}.final.vcf", sample=SAMPLES)
+
+
+############################################################
+# 0.1 BOWTIE2 INDEXING
+############################################################
+
+# reference genome.fa 
+REF = "reference/genome.fa"
+
+# Bowtie2 index file names
+BOWTIE2_INDEX = expand(
+    "reference/genome.{ext}.bt2",
+    ext=["1", "2", "3", "4", "rev.1", "rev.2"]
+)
+
+rule bowtie2_index:
+    input:
+        REF
+    output:
+        BOWTIE2_INDEX
+    log:
+        "logs/bowtie2/index.log"
+    conda:
+        "envs/bowtie2.yaml"
+    shell:
+        """
+        bowtie2-build {input} reference/genome &> {log}
+        """
+
+
+############################################################
+# 0. FASTQC
+############################################################
+
+rule fastqc:
+    input:
+        "reads/{sample}.fastq.gz"
+    output:
+        html = "fastqc/{sample}_fastqc.html",
+        zip  = "fastqc/{sample}_fastqc.zip"
+    log:
+        "logs/fastqc/{sample}.log"
+    conda:
+        "envs/fastqc.yaml"
+    shell:
+        """
+        fastqc {input} --outdir fastqc &> {log}
+        """
+
+
+############################################################
+# 1. ALIGNMENT WITH BOWTIE2
+############################################################
+
+rule bowtie2_align:
+    input:
+        fastq = "reads/{sample}.fastq.gz",
+        index = BOWTIE2_INDEX
+    output:
+        sam = "align/{sample}.sam",
+        aligned = "align/{sample}.aligned.fastq",
+        unaligned = "align/{sample}.unaligned.fastq"
+    log:
+        "logs/bowtie2/{sample}.log"
+    conda:
+        "envs/bowtie2.yaml"
+    shell:
+        """
+        bowtie2 -p 8 -x reference/genome \
+            -U {input.fastq} \
+            --al {output.aligned} \
+            --un {output.unaligned} \
+            -S {output.sam} &> {log}
+        """
+
+
+############################################################
+# 2. SAM → SORTED BAM
+############################################################
+
+rule sam_to_sorted_bam:
+    input:
+        "align/{sample}.sam"
+    output:
+        "bam/{sample}.sorted.bam"
+    log:
+        "logs/samtools/{sample}.log"
+    conda:
+        "envs/samtools.yaml"
+    shell:
+        """
+        samtools view -buh -q 3 {input} \
+        | samtools sort -@ 4 -o {output} &> {log}
+        """
+
+
+############################################################
+# 3. ADD READ GROUPS (PICARD)
+############################################################
+
+rule add_read_groups:
+    input:
+        "bam/{sample}.sorted.bam"
+    output:
+        "bam/{sample}.RG.bam"
+    params:
+         rglb = "lib1",
+         rgpl = "ILLUMINA",
+         rgsm = lambda wc: wc.sample,          # wildcard inside lambda
+         rgpu = "unit1"
+    log:
+        "logs/picard/{sample}.log"
+    conda:
+        "envs/picard.yaml"
+    shell:
+        """
+        picard AddOrReplaceReadGroups \
+            I={input} O={output} \
+            RGLB={params.rglb} RGPL={params.rgpl} \
+            RGSM={params.rgsm} RGPU={params.rgpu} &> {log}
+        """
+
+
+############################################################
+# 4. INDEX BAM
+############################################################
+
+rule index_bam:
+    input:
+        "bam/{sample}.RG.bam"
+    output:
+        "bam/{sample}.RG.bam.bai"
+    log:
+        "logs/index/{sample}.log"
+    conda:
+        "envs/samtools.yaml"
+    shell:
+        """
+        samtools index {input} &> {log}
+        """
+
+# Reference index + dictionary generation
+
+rule ref_fai:
+    input:
+        REF
+    output:
+        REF + ".fai"
+    conda:
+        "envs/samtools.yaml"
+    shell:
+        """
+        samtools faidx {input}
+        """
+
+rule ref_dict:
+    input:
+        REF
+    output:
+        REF.replace(".fa", "").replace(".fasta","") + ".dict"
+    conda:
+        "envs/gatk.yaml"
+    shell:
+        """
+        gatk CreateSequenceDictionary \
+            -R {input} \
+            -O {output}
+        """
+
+
+############################################################
+# 5. VARIANT CALLING – GATK HaplotypeCaller
+############################################################
+
+# Make sure variant calling depends on ref indexing
+
+rule haplotype_caller:
+    input:
+        bam = "bam/{sample}.RG.bam",
+        bai = "bam/{sample}.RG.bam.bai",
+        ref = REF,
+        fai = REF + ".fai",
+        dict = REF.replace(".fa","").replace(".fasta","") + ".dict"
+    output:
+        "variants/{sample}.raw.vcf"
+    params:
+        conf = 30
+    log:
+        "logs/gatk/{sample}.log"
+    conda:
+        "envs/gatk.yaml"
+    shell:
+        """
+        gatk HaplotypeCaller \
+            -R {input.ref} \
+            -I {input.bam} \
+            -O {output} \
+            -stand-call-conf {params.conf} &> {log}
+        """
+
+
+############################################################
+# 6. SELECT SNPs
+############################################################
+
+rule select_snps:
+    input:
+        ref = REF,
+        vcf = "variants/{sample}.raw.vcf"
+    output:
+        "variants/{sample}.snps.vcf"
+    log:
+        "logs/select_snps/{sample}.log"
+    conda:
+        "envs/gatk.yaml"
+    shell:
+        """
+        gatk SelectVariants \
+            -R {input.ref} -V {input.vcf} \
+            -select-type SNP -O {output} &> {log}
+        """
+
+
+############################################################
+# 7. SELECT INDELS
+############################################################
+
+rule select_indels:
+    input:
+        ref = REF,
+        vcf = "variants/{sample}.raw.vcf"
+    output:
+        "variants/{sample}.indels.vcf"
+    log:
+        "logs/select_indels/{sample}.log"
+    conda:
+        "envs/gatk.yaml"
+    shell:
+        """
+        gatk SelectVariants \
+            -R {input.ref} -V {input.vcf} \
+            -select-type INDEL -O {output} &> {log}
+        """
+
+
+############################################################
+# 8. COMBINE SNPs + INDELs
+############################################################
+
+rule combine_variants:
+    input:
+        snps = "variants/{sample}.snps.vcf",
+        indels = "variants/{sample}.indels.vcf",
+        ref = REF
+    output:
+        "variants/{sample}.final.vcf"
+    log:
+        "logs/combine/{sample}.log"
+    conda:
+        "envs/gatk.yaml"
+    shell:
+        """
+        gatk MergeVcfs \
+            -I {input.snps} \
+            -I {input.indels} \
+            -O {output} &> {log}
+        """
