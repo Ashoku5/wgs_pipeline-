@@ -16,7 +16,7 @@ SAMPLES = [
 
 
 #############################################
-# AUTO-DETECT SAMPLES (single-end)
+# AUTO-DETECT SAMPLES (paired-end)
 #############################################
 #  SAMPLES, PAIRS = glob_wildcards("reads/{sample}_{pair}.fastq.gz")
 #  SAMPLES = sorted(list(set(SAMPLES)))  # remove duplicates 
